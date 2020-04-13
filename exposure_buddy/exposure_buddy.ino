@@ -1,15 +1,6 @@
-#include <PCD8544.h>
-
-#include <Adafruit_SPITFT.h>
-#include <Adafruit_SPITFT_Macros.h>
-#include <gfxfont.h>
-#include <Adafruit_GFX.h>
-
-#include <SPI.h>
-
-
 /* 
 (Analog) camera helper: Exposure setter using cable shutter.
+
 
 Features:
 - Servo to "(un)press" the cable shutter -> https://www.arduino.cc/en/reference/servo
