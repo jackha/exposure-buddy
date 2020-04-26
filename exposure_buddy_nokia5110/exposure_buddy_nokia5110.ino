@@ -83,7 +83,7 @@ int buttonPin = 8;  // start/stop
 int prevButtonVal = 0;
 int buttonVal = 0;
 
-int switchPin = 6;  // switch compensation for reciprocity failure
+int switchPin = 12;  // switch compensation for reciprocity failure
 int prevSwitchVal = 0;
 int switchVal = 0;
 
@@ -185,9 +185,9 @@ void loop() {
   }*/
   currentMillis = millis();
   prevRoundedExposureTime = roundedExposureTime;
-  roundedExposureTime = round(pow(2, float(round((float(potVal) / 115) * 3)) / 3));  // resize roughly 0-1000 to 0-9, then round to 1/3's 
-  reciprocityCorrectionStops = 0.5167 * log(pow(2, float(potVal) / 115)) - 0.2; // kodak portra 400, from: https://www.flickr.com/groups/477426@N23/discuss/72157635197694957/
-  roundedExposureTimeReciprocity = round(pow(2, float(round(((float(potVal) / 115) + reciprocityCorrectionStops) * 3)) / 3)); 
+  roundedExposureTime = round(pow(2, float(round((float(potVal+50) / 120) * 3)) / 3));  // resize roughly 0-1000 to 0-9, then round to 1/3's 
+  reciprocityCorrectionStops = 0.5167 * log(pow(2, float(potVal+50) / 120)) - 0.2; // kodak portra 400, from: https://www.flickr.com/groups/477426@N23/discuss/72157635197694957/
+  roundedExposureTimeReciprocity = round(pow(2, float(round(((float(potVal+50) / 120) + reciprocityCorrectionStops) * 3)) / 3)); 
   
   prevSystemState = systemState;
   anythingChanged = (prevRoundedExposureTime != roundedExposureTime) || (prevButtonVal != buttonVal) || (prevSwitchVal != switchVal);
@@ -199,18 +199,32 @@ void loop() {
   {
      case setting:
         servoPosition(servoPosOff);
-     
-        sprintf(s, "TIME      %4d", roundedExposureTime);
 
         display.clearDisplay();
+        display.setTextSize(1);
         display.setCursor(0,0);
+        display.println("EXP.TIME");
+        sprintf(s, "%4d", roundedExposureTime);
+        display.setCursor(84-4*6,0);
         display.println(s);
-  
+
         if (switchVal)
         {
-          sprintf(s, "COMP.     %4d", roundedExposureTimeReciprocity);
+          display.setCursor(0, 8);
+          display.println("RECIPR.COMP.");
+        }
+
+        display.setTextSize(2);
+        display.setCursor(84-4*12, 32);
+        if (switchVal)
+        {
+          sprintf(s, "%4d", roundedExposureTimeReciprocity);
+          display.println(s);
+        } else {
+          sprintf(s, "%4d", roundedExposureTime);
           display.println(s);
         }
+  
         if (anythingChanged)
         {
           lcdBacklightTimeoutMillis = currentMillis + LCD_BACKLIGHT_TIMEOUT;
@@ -233,12 +247,19 @@ void loop() {
      case countdown:
         servoPosition(servoPosOff);
 
-        sprintf(s, "EXPOSURETM%4d", exposureTime);
         display.clearDisplay();
+        display.setTextSize(1);
         display.setCursor(0,0);
+        display.println("COUNTDOWN");
+        display.setCursor(0,40);
+        display.println("EXP.TIME");
+        display.setCursor(8*7,40);
+        sprintf(s, "%4d", exposureTime);
         display.println(s);
 
-        sprintf(s, "COUNTDOWN %4d", min(1 + (stopCountDownMillis - currentMillis) / 1000, 9999));
+        display.setTextSize(2);
+        sprintf(s, "%d", min((1000 + stopCountDownMillis - currentMillis) / 1000, 999));
+        display.setCursor(42 - strlen(s) * 7,16);
         display.println(s);
         if ((prevButtonVal == 1) && (buttonVal == 0)) 
         {
@@ -263,11 +284,21 @@ void loop() {
      case exposure_timer:
         servoPosition(servoPosOn);
      
-        sprintf(s, "EXPOSING  %4d", min(exposureTime, 9999));
         display.clearDisplay();
+        display.setTextSize(1);
         display.setCursor(0,0);
+
+        display.println("EXPOSING....");
+        display.setCursor(0,40);
+        display.println("EXP.TIME");
+        display.setCursor(56,40);
+        sprintf(s, "%4d", min(exposureTime, 9999));
         display.println(s);
-        sprintf(s, "%4d", min((stopExposureTimeMillis - currentMillis) / 1000, 9999));
+        
+        //sprintf(s, "%4d", min((stopExposureTimeMillis - currentMillis) / 1000, 9999));
+        display.setTextSize(2);
+        sprintf(s, "%d", min((currentMillis - startExposureTimeMillis) / 1000, 9999));
+        display.setCursor(42 - strlen(s) * 7,16);
         display.println(s);
         if ((currentMillis > stopExposureTimeMillis) || ((prevButtonVal == 1) && (buttonVal == 0)))
         {
@@ -280,6 +311,7 @@ void loop() {
      case done:
         servoPosition(servoPosOff);
         display.clearDisplay();
+        display.setTextSize(2);
         display.setCursor(0, 0);
         display.println("DONE!");
         if (currentMillis > doneFinishedTimeMillis)
