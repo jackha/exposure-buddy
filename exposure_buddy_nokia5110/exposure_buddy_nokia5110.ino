@@ -8,6 +8,8 @@
 #include <Servo.h>
 
 #define LCD_BACKLIGHT_TIMEOUT 30000
+#define DONE_TIMEOUT 3000
+
 #define BACKLIGHT_ON LOW
 #define BACKLIGHT_OFF HIGH
 /* 
@@ -63,7 +65,7 @@ Adafruit_PCD8544 display = Adafruit_PCD8544(10, 6, 5, 4, 3);
 // include the library code: HD44780
 //#include <LiquidCrystal.h>
 
-enum state{setting, countdown, exposure_timer} systemState;
+enum state{setting, countdown, exposure_timer, done} systemState, prevSystemState;
 
 // initialize the library with the numbers of the interface pins
 //LiquidCrystal lcd(12, 11, 5, 4, 3, 2);
@@ -92,6 +94,7 @@ int requestLcdBacklightVal = BACKLIGHT_ON;
 
 int servoPosOff = 160;  // if you hear a buzzing sound, you need to decrease this value
 int servoPosOn = 0;   // if you hear a buzzing sound, you need to increase this value
+int servoPos = -1;
 
 int lcdBacklightPin = 11;
 
@@ -106,17 +109,24 @@ unsigned long stopExposureTimeMillis = 0;
 unsigned long currentMillis = 0;
 unsigned long lcdBacklightTimeoutMillis = 0;
 
+unsigned long doneFinishedTimeMillis = 0;
+
 bool anythingChanged;
+bool forceDisplay;
 
 char s[16];
 
 // To save power and to prevent any timer interference, only turn on servo when using it: this move is blocking!
-void servoWrite(int pos)
+void servoPosition(int pos)
 {
-  myservo.attach(servoPin);
-  myservo.write(pos);
-  delay(1000);
-  myservo.detach();
+  if (pos != servoPos)
+  {
+    servoPos = pos;
+    myservo.attach(servoPin);
+    myservo.write(pos);
+    delay(1000);
+    myservo.detach();
+  }
 }
 
 void setup() {
@@ -124,7 +134,7 @@ void setup() {
   //myservo.attach(servoPin);  // attaches the servo to the servo object
   //lcd.begin(84, 48);  // nokia
   //myservo.write(servoPosOff);
-  servoWrite(servoPosOff);
+  servoPosition(servoPosOff);
           
   // set up the LCD's number of columns and rows:
   //lcd.begin(16, 2);
@@ -140,6 +150,7 @@ void setup() {
   lcdBacklightTimeoutMillis = millis() + LCD_BACKLIGHT_TIMEOUT;
 
   systemState = setting;
+  prevSystemState = setting;
 
   display.begin();
   // init done
@@ -178,26 +189,27 @@ void loop() {
   reciprocityCorrectionStops = 0.5167 * log(pow(2, float(potVal) / 115)) - 0.2; // kodak portra 400, from: https://www.flickr.com/groups/477426@N23/discuss/72157635197694957/
   roundedExposureTimeReciprocity = round(pow(2, float(round(((float(potVal) / 115) + reciprocityCorrectionStops) * 3)) / 3)); 
   
+  prevSystemState = systemState;
   anythingChanged = (prevRoundedExposureTime != roundedExposureTime) || (prevButtonVal != buttonVal) || (prevSwitchVal != switchVal);
+  
+  forceDisplay = true;
   
   // update display and state
   switch (systemState) 
   {
      case setting:
+        servoPosition(servoPosOff);
+     
         sprintf(s, "TIME      %4d", roundedExposureTime);
 
         display.clearDisplay();
         display.setCursor(0,0);
         display.println(s);
   
-        //lcd.setCursor(0, 0);
-        //lcd.print(s);  
         if (switchVal)
         {
           sprintf(s, "COMP.     %4d", roundedExposureTimeReciprocity);
           display.println(s);
-          //lcd.setCursor(0, 1);
-          //lcd.print(s);  
         }
         if (anythingChanged)
         {
@@ -213,16 +225,14 @@ void loop() {
             exposureTime = roundedExposureTime;
           }
           stopCountDownMillis = currentMillis + countDownDurationMillis;
-          //myservo.write(servoPosOff);
-          servoWrite(servoPosOff);
-          //lcd.clear();
           systemState = countdown; 
         }
 
-        display.display();
         break;
      
      case countdown:
+        servoPosition(servoPosOff);
+
         sprintf(s, "EXPOSURETM%4d", exposureTime);
         display.clearDisplay();
         display.setCursor(0,0);
@@ -232,10 +242,6 @@ void loop() {
         display.println(s);
         if ((prevButtonVal == 1) && (buttonVal == 0)) 
         {
-          //lcd.setCursor(0, 1);
-          //lcd.print("COUNTDOWNSTOPPED");
-          //delay(1000);
-          //lcd.clear();
           systemState = setting;
         }
         if (anythingChanged)
@@ -247,54 +253,55 @@ void loop() {
         {
           startExposureTimeMillis = currentMillis;
           stopExposureTimeMillis = currentMillis + exposureTime * 1000;
-          //myservo.write(servoPosOn);
-          servoWrite(servoPosOn);
-          //lcd.clear();
           requestLcdBacklightVal = BACKLIGHT_OFF;
+          lcdBacklightTimeoutMillis = 0;
           systemState = exposure_timer;
         }
 
-        display.display();
         break;
      
      case exposure_timer:
+        servoPosition(servoPosOn);
+     
         sprintf(s, "EXPOSING  %4d", min(exposureTime, 9999));
         display.clearDisplay();
         display.setCursor(0,0);
         display.println(s);
-        //lcd.setCursor(0, 0);
-        //lcd.print(s);
-        //lcd.setCursor(0, 1);
-        //lcd.print(min((currentMillis - startExposureTimeMillis) / 1000, 9999));
         sprintf(s, "%4d", min((stopExposureTimeMillis - currentMillis) / 1000, 9999));
         display.println(s);
-        //lcd.setCursor(12, 1);
-        //lcd.print(s);
         if ((currentMillis > stopExposureTimeMillis) || ((prevButtonVal == 1) && (buttonVal == 0)))
         {
-          //myservo.write(servoPosOff);
-          servoWrite(servoPosOff);
-          //lcd.clear();
-          //lcd.write("DONE!");
-          display.clearDisplay();
-          display.setCursor(0, 0);
-          display.println("DONE!");
-          delay(1000); // dirty
-          //lcd.clear();
+          doneFinishedTimeMillis = currentMillis + DONE_TIMEOUT;
           requestLcdBacklightVal = BACKLIGHT_ON;
+          lcdBacklightTimeoutMillis = 0;
+          systemState = done;
+        }
+        break;
+     case done:
+        servoPosition(servoPosOff);
+        display.clearDisplay();
+        display.setCursor(0, 0);
+        display.println("DONE!");
+        if (currentMillis > doneFinishedTimeMillis)
+        {
+          requestLcdBacklightVal = BACKLIGHT_ON;
+          lcdBacklightTimeoutMillis = currentMillis + LCD_BACKLIGHT_TIMEOUT;
           systemState = setting;
         }
-        display.display();
         break;
   }  
+
+  if ((currentMillis > lcdBacklightTimeoutMillis) && (lcdBacklightTimeoutMillis != 0)) {
+    requestLcdBacklightVal = BACKLIGHT_OFF;    
+  }
 
   if (requestLcdBacklightVal != lcdBacklightVal) {
     digitalWrite(lcdBacklightPin, requestLcdBacklightVal);
     lcdBacklightVal = requestLcdBacklightVal;
   }
-
-  if (currentMillis >= lcdBacklightTimeoutMillis) {
-    digitalWrite(lcdBacklightPin, BACKLIGHT_OFF);
-  }
+  
+  //if (anythingChanged || prevSystemState != systemState || foeceDisplay) {
+    display.display();
+  //}
 }
 
