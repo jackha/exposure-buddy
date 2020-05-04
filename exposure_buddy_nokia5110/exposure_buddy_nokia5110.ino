@@ -6,12 +6,30 @@
 #include <Adafruit_PCD8544.h>
 
 #include <Servo.h>
+#include <math.h>
 
 #define LCD_BACKLIGHT_TIMEOUT 30000
 #define DONE_TIMEOUT 3000
 
 #define BACKLIGHT_ON LOW
 #define BACKLIGHT_OFF HIGH
+
+#define COMPENSATION_MODE_NONE 0
+#define COMPENSATION_MODE_PORTRA 1
+#define COMPENSATION_MODE_ILFORD_PAN_FP 2  // =base index for ilford exponential lookup table t^c 
+#define COMPENSATION_MODE_ILFORD_FP4 3
+#define COMPENSATION_MODE_ILFORD_HP5 4
+
+#define NUM_COMPENSATION_MODES 5
+
+const char *compensationModeText[NUM_COMPENSATION_MODES] = {
+  "",
+  "PORTRA 160/400",
+  "ILFORD PAN F+",
+  "ILFORD FP4",
+  "ILFORD HP5"
+};
+
 /* 
 (Analog) camera helper: Exposure setter using cable shutter.
 
@@ -48,7 +66,6 @@ https://www.adafruit.com/product/338
 (Hacky, no level shifters!) https://create.arduino.cc/projecthub/muhammad-aqib/interfacing-nokia-5110-lcd-with-arduino-7bfcdd
 */
 
-
 Servo myservo;  // create servo object to control a servo
 //ServoTimer2 myservo;  // create servo object to control a servo
 
@@ -74,18 +91,20 @@ int servoPin = 9;
 
 int potPin = A0;    // change value
 int potVal = 0;
+
 int prevRoundedExposureTime = 0;  // for detecting change
 int roundedExposureTime = 0;  // rounded to 1/3 stops
 float reciprocityCorrectionStops = 0;
 int roundedExposureTimeReciprocity = 0;  // rounded to 1/3 stops
 
+int pot2Pin = A1;    // compensation for reciprocity failure
+int pot2Val = 0;
+int compensationMode = 0;
+int prevCompensationMode = -1;
+
 int buttonPin = 8;  // start/stop
 int prevButtonVal = 0;
 int buttonVal = 0;
-
-int switchPin = 12;  // switch compensation for reciprocity failure
-int prevSwitchVal = 0;
-int switchVal = 0;
 
 int lcdBacklightVal = BACKLIGHT_ON;
 int requestLcdBacklightVal = BACKLIGHT_ON;
@@ -111,6 +130,9 @@ unsigned long lcdBacklightTimeoutMillis = 0;
 
 unsigned long doneFinishedTimeMillis = 0;
 
+unsigned long powerDrawTimeoutMillis = 0;
+
+
 bool anythingChanged;
 bool forceDisplay;
 
@@ -129,21 +151,23 @@ void servoPosition(int pos)
   }
 }
 
+float ilfordReciprocityCompensation(int film_type, float t)
+{
+  float lookup[3] = {
+    1.33,  //PAN F+
+    1.26,  //FP4+
+    1.31   //HP5+
+  };
+  return pow(t, lookup[film_type-2]);
+}
+
+
 void setup() {
 
-  //myservo.attach(servoPin);  // attaches the servo to the servo object
-  //lcd.begin(84, 48);  // nokia
-  //myservo.write(servoPosOff);
   servoPosition(servoPosOff);
           
-  // set up the LCD's number of columns and rows:
-  //lcd.begin(16, 2);
-
   pinMode(buttonPin, INPUT);           // set pin to input
   digitalWrite(buttonPin, HIGH);  
-
-  pinMode(switchPin, INPUT);           // set pin to input
-  digitalWrite(switchPin, HIGH);
   
   pinMode(lcdBacklightPin, OUTPUT);
   digitalWrite(lcdBacklightPin, LOW);
@@ -158,14 +182,7 @@ void setup() {
   // you can change the contrast around to adapt the display
   // for the best viewing!
   display.setContrast(60);
-  //display.clearDisplay();
-  //display.setTextSize(1);
-  //display.setTextColor(BLACK);
-  //display.display();
-  //delay(2000);
 
-  //display.display(); // show splashscreen
-  //delay(2000);
   display.clearDisplay();   // clears the screen and buffer
   display.setTextSize(1);
   display.setTextColor(BLACK);
@@ -174,10 +191,11 @@ void setup() {
 
 void loop() {
   potVal = analogRead(potPin);    // read the value from the sensor
+  pot2Val = analogRead(pot2Pin);
+  
   prevButtonVal = buttonVal;
   buttonVal = digitalRead(buttonPin);
-  prevSwitchVal = switchVal;
-  switchVal = digitalRead(switchPin);
+
   // most ugly debouncing ever
   /*if (prevButtonVal != buttonVal) 
   {
@@ -185,12 +203,30 @@ void loop() {
   }*/
   currentMillis = millis();
   prevRoundedExposureTime = roundedExposureTime;
-  roundedExposureTime = round(pow(2, float(round((float(potVal+50) / 120) * 3)) / 3));  // resize roughly 0-1000 to 0-9, then round to 1/3's 
-  reciprocityCorrectionStops = 0.5167 * log(pow(2, float(potVal+50) / 120)) - 0.2; // kodak portra 400, from: https://www.flickr.com/groups/477426@N23/discuss/72157635197694957/
-  roundedExposureTimeReciprocity = round(pow(2, float(round(((float(potVal+50) / 120) + reciprocityCorrectionStops) * 3)) / 3)); 
+  // The 0.03421571533791301 is here to round it off to 250,500,1000 instead of 256,512,1024, etc
+  roundedExposureTime = round(pow(2, float(round((float(potVal+50) / 120) * 3)) / 3 - 0.03421571533791301));  // resize roughly 0-1000 to 0-9, then round to 1/3's 
+
+  switch (compensationMode)
+  {
+    case COMPENSATION_MODE_PORTRA:
+      reciprocityCorrectionStops = 0.5167 * log(pow(2, float(potVal+50) / 120)) - 0.2; // kodak portra 400, from: https://www.flickr.com/groups/477426@N23/discuss/72157635197694957/
+      roundedExposureTimeReciprocity = round(pow(2, float(round(((float(potVal+50) / 120) + reciprocityCorrectionStops) * 3)) / 3)); 
+      break;
+    case COMPENSATION_MODE_ILFORD_PAN_FP:
+    case COMPENSATION_MODE_ILFORD_FP4:
+    case COMPENSATION_MODE_ILFORD_HP5:
+      roundedExposureTimeReciprocity = ilfordReciprocityCompensation(compensationMode, roundedExposureTime);
+      break;
+    default:
+      roundedExposureTimeReciprocity = roundedExposureTime;
+      break;
+  }
+  
+  prevCompensationMode = compensationMode;
+  compensationMode = pot2Val * NUM_COMPENSATION_MODES / 1024;
   
   prevSystemState = systemState;
-  anythingChanged = (prevRoundedExposureTime != roundedExposureTime) || (prevButtonVal != buttonVal) || (prevSwitchVal != switchVal);
+  anythingChanged = (prevRoundedExposureTime != roundedExposureTime) || (prevButtonVal != buttonVal) || (prevCompensationMode != compensationMode);
   
   forceDisplay = true;
   
@@ -208,22 +244,21 @@ void loop() {
         display.setCursor(84-4*6,0);
         display.println(s);
 
-        if (switchVal)
+        sprintf(s, "%2d:%02d", roundedExposureTimeReciprocity / 60, roundedExposureTimeReciprocity % 60);
+        display.setCursor(84-5*6,3*8);
+        display.println(s);
+
+        if (compensationMode != COMPENSATION_MODE_NONE)
         {
           display.setCursor(0, 8);
           display.println("RECIPR.COMP.");
+          display.println(compensationModeText[compensationMode]);
         }
 
         display.setTextSize(2);
         display.setCursor(84-4*12, 32);
-        if (switchVal)
-        {
-          sprintf(s, "%4d", roundedExposureTimeReciprocity);
-          display.println(s);
-        } else {
-          sprintf(s, "%4d", roundedExposureTime);
-          display.println(s);
-        }
+        sprintf(s, "%4d", roundedExposureTimeReciprocity);
+        display.println(s);
   
         if (anythingChanged)
         {
@@ -232,7 +267,7 @@ void loop() {
         }
         if ((prevButtonVal == 1) && (buttonVal == 0)) 
         {
-          if (switchVal)
+          if (compensationMode != COMPENSATION_MODE_NONE)
           {
             exposureTime = roundedExposureTimeReciprocity;
           } else {
@@ -333,7 +368,8 @@ void loop() {
   }
   
   //if (anythingChanged || prevSystemState != systemState || foeceDisplay) {
-    display.display();
+  display.display();
   //}
+  
 }
 
